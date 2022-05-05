@@ -258,3 +258,4 @@ updateGraph g2 |> ignore
 
 let (KeyValue(_, a)) = g.Agents |> Seq.head
 
+// Is it possible to have a belief not shared by any other agent?
