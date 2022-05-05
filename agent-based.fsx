@@ -1,7 +1,3 @@
-module AgentBased
-#r "nuget: FSharp.Data"
-open FSharp.Data
-
 // --------------------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------------------
@@ -19,7 +15,7 @@ type UnPair<'T when 'T : comparison> =
     elif x.Second = v then x.First
     else failwith "Wrong argument to Other"
 
-let unpair a b = UnPair<_>.Create(a, b)
+let unpair a b = UnPair<'a>.Create(a, b)
 
 // --------------------------------------------------------------------------------------
 // Domain model
@@ -32,234 +28,234 @@ type Ideas = List<Domain>
 let ideas : Ideas = 
   [ set ["A1"; "A2"; "A3"; "A4" ]
     set ["B1"; "B2"; "B3"; "B4" ]
-    set ["C1"; "C2"; "C3"; "C4" ]]
+    set ["C1"; "C2"; "C3"; "C4" ] ]
 
+let conflict a b = 
+  ideas |> Seq.exists (fun domain -> domain.Contains a && domain.Contains b)
 
 type AgentID = int
 
-type Agent = 
-  { ID : AgentID }
+/// A set of beliefs. This is a set that cannot, at the same time, contain 
+/// multiple beliefs from a single domain of ideas. This is checked at runtime.
+type BeliefSet(beliefs:Set<Belief>) = 
+  do 
+    let mutable conflicting = set []
+    for belief in beliefs do
+      if conflicting.Contains belief then failwith "Conflicted belief set!"
+      let domain = ideas |> Seq.find (fun d -> d.Contains belief)
+      conflicting <- Set.union conflicting (domain - set [belief])
+  member x.All = beliefs
+  member x.Contains(b) = beliefs.Contains(b)
+  member x.Remove(b) = BeliefSet(beliefs.Remove(b))
+  member x.Adopt(b) = 
+    let domain = ideas |> List.find (fun d -> d.Contains b)
+    BeliefSet((beliefs- domain).Add(b))
 
+/// Agent consisting of an ID and a set of (non-conflicting) beliefs
+type Agent = 
+  { ID : AgentID
+    Beliefs : BeliefSet }
+  member x.RemoveBelief(b) = 
+    { x with Beliefs = x.Beliefs.Remove(b) }
+  member x.AdoptBelief(b) = 
+    { x with Beliefs = x.Beliefs.Adopt(b) }
+
+/// A link between two agents, created because of a shared belief 'Reason' at the time
 type Edge =
   { Nodes : UnPair<AgentID>
-    Belief : Belief }
+    Reason : Belief }
 
+/// A graph consisting of agents and edges (links) between them
 type Graph =
-  { Agents : Agent[]
-    Edges : Edge[] }
+  { Agents : Map<AgentID, Agent>
+    Edges : Edge list }
+  member x.GetAgent(id) = x.Agents.[id]
+  member x.UpdateAgent(a) = 
+    { x with Agents = x.Agents.Add(a.ID, a) }
+  member x.GetEdges(id) = 
+    x.Edges |> List.filter (fun e -> e.Nodes.Contains(id)) 
+  member x.RemoveEdge(e) = 
+    { x with Edges = x.Edges |> List.filter ((<>) e) }
+  member x.AddEdge(e) = 
+    { x with Edges = e :: x.Edges }
+  member x.GetAgents() = x.Agents.Values
 
 // --------------------------------------------------------------------------------------
-// 
+// Initializing & printing the world
 // --------------------------------------------------------------------------------------
 
-module Beliefs = 
-  let getDomain b = 
-    ideas |> Seq.find (fun d -> d.Contains b)
+let domainSkipChance = 0.2
+let numberOfAgents = 5
+let maxNumberOfEdges = 10
 
-  let conflict a b = 
-    ideas |> Seq.exists (fun domain -> domain.Contains a && domain.Contains b)
+let mutable agentCounter = 0
+let rnd = System.Random() 
 
-  let colors = [|
-    [|"#3182bd";"#6baed6";"#9ecae1";"#c6dbef"|]
-    [|"#e6550d";"#fd8d3c";"#fdae6b";"#fdd0a2"|]
-    [|"#31a354";"#74c476";"#a1d99b";"#c7e9c0"|]
-    [|"#756bb1";"#9e9ac8";"#bcbddc";"#dadaeb"|]
-    [|"#636363";"#969696";"#bdbdbd";"#d9d9d9"|] |]
-//    [|"#393b79";"#5254a3";"#6b6ecf";"#9c9ede"|]; 
-//    [|"#637939";"#8ca252";"#b5cf6b";"#cedb9c"|]; 
-//    [|"#8c6d31";"#bd9e39";"#e7ba52";"#e7cb94"|]; 
-//    [|"#843c39";"#ad494a";"#d6616b";"#e7969c"|]; 
-//    [|"#7b4173";"#a55194";"#ce6dbd";"#de9ed6"|] |]
+let initAgent () = 
+  agentCounter <- agentCounter + 1
+  { ID = agentCounter 
+    Beliefs =       
+      [ // Generate at least one belief from one selected domain
+        let oneDomainIdx = rnd.Next(ideas.Length)
+        for i, domain in Seq.indexed ideas do
+          let domain = Array.ofSeq domain
+          if i = oneDomainIdx || rnd.NextDouble() > domainSkipChance then 
+            yield domain.[rnd.Next(domain.Length)] ] |> set |> BeliefSet } 
 
-  let colorBelief = 
-    let lookup = 
-      seq { for shades, domain in Seq.zip colors ideas do
-              for color, belief in Seq.zip shades domain do 
-                yield belief, color } |> dict
-    fun b -> lookup.[b]
+let initGraph () = 
+  let agents = 
+    [ for i in 1 .. numberOfAgents -> initAgent() ]
+  let links = 
+    [ for i in 1 .. maxNumberOfEdges do 
+        let fst = agents.[rnd.Next(agents.Length)]
+        let snd = agents.[rnd.Next(agents.Length)]
+        let beliefs = Set.union fst.Beliefs.All snd.Beliefs.All |> Array.ofSeq
+        if beliefs.Length > 0 && fst.ID <> snd.ID then
+          let reason = beliefs.[rnd.Next(beliefs.Length)]
+          yield { Nodes = unpair fst.ID snd.ID; Reason = reason } ] 
+    // TODO: Also avoid conflicting reasons
+  { Agents = Map.ofSeq [ for a in agents -> a.ID, a ]
+    Edges = links }
 
+let printGraph graph = 
+  printfn "AGENTS"
+  for (KeyValue(_, a)) in graph.Agents do
+    printf $" * {a.ID}: " 
+    for b in a.Beliefs.All do printf $"{b} "
+    printfn ""
+  printfn "LINKS"
+  for l in graph.Edges do
+    printfn $" {l.Nodes.First} --({l.Reason})--> {l.Nodes.Second}"
 
-// --------------------------------------------------------------------------------------
-// 
-// --------------------------------------------------------------------------------------
-
-module Graph = 
-  let getEdges id g = 
-    g.Edges |> Seq.filter (fun e -> e.Nodes.Contains(id)) 
-
-  let updateBelief edge newBelief g = 
-    { g with Edges = g.Edges |> Array.map (fun old ->
-          if old = edge then { edge with Belief = newBelief } else old) }
-
-  let existsEdge a1 a2 g = 
-    g.Edges |> Seq.exists (fun e -> e.Nodes = unpair a1 a2)
-
-  let removeEdge edge g = 
-    { g with Edges = g.Edges |> Array.filter (fun old -> old <> edge) }
-
-  let addEdge edge g = 
-    { g with Edges = Array.append [|edge|] g.Edges }
-
-  let mutable agentCounter = 0
-  let rnd = System.Random() 
-
-  let initAgent () = 
-    agentCounter <- agentCounter + 1
-    { ID = agentCounter }
-
-  let initGraph numberOfAgents numberOfEdges =
-    let allBeliefs = ideas |> Seq.collect id |> Array.ofSeq
-    let agents = 
-      Array.init numberOfAgents (fun _ -> initAgent())
-    let links = 
-      Array.init numberOfEdges (fun _ ->
-        let fst, snd = 
-          Seq.initInfinite (fun _ -> rnd.Next(agents.Length), rnd.Next(agents.Length)) 
-          |> Seq.filter (fun (a, b) -> a <> b) |> Seq.head
-        let belief = allBeliefs.[rnd.Next(allBeliefs.Length)]
-        { Nodes = unpair agents.[fst].ID agents.[snd].ID; Belief = belief } )
-      // TODO: Also avoid conflicting reasons
-    { Agents = agents
-      Edges = links }
-
-  let printGraph graph = 
-    printfn "LINKS"
-    for l in graph.Edges do
-      printfn $" {l.Nodes.First} <--({l.Belief})--> {l.Nodes.Second}"
 
 // --------------------------------------------------------------------------------------
-// 
+// Helpers for writing agent logic
 // --------------------------------------------------------------------------------------
 
-module Vis = 
-  let visualizeNetwork (g:Graph) = 
-    let nodes = 
-      JsonValue.Array [|
-        for a in g.Agents ->
-          JsonValue.Record([|   
-            "id", JsonValue.Number (decimal a.ID)
-            "label", JsonValue.String (string a.ID)
-            "color", JsonValue.String "#303030"
-            "size", JsonValue.Number 7M
-            "font", JsonValue.Record [| 
-              "color", JsonValue.String "#d0d0d0"
-              "strokeWidth", JsonValue.Number 0M |]
-            "borderWidth", JsonValue.Number 2M |])
-      |]
-    let edges = 
-      JsonValue.Array [|
-        for e in g.Edges ->
-          JsonValue.Record([|   
-            "color", JsonValue.String (Beliefs.colorBelief e.Belief)
-            "width", JsonValue.Number 3M
-            "font", JsonValue.Record [| 
-              "color", JsonValue.String (Beliefs.colorBelief e.Belief)
-              "strokeColor", JsonValue.String "black"
-              "strokeWidth", JsonValue.Number 4M |]
-            "label", JsonValue.String e.Belief
-            "from", JsonValue.Number (decimal e.Nodes.First)
-            "to", JsonValue.Number (decimal e.Nodes.Second) |])
-      |]
-    let id = "network" + System.Guid.NewGuid().ToString("N")
-    let html = $"""
-      <script>
-        var nodes = new vis.DataSet({nodes.ToString()});
-        var edges = new vis.DataSet({edges.ToString()});
-        var container = document.getElementById("{id}");
-        var data = {{ nodes: nodes, edges: edges, }};
-        var options = {{ layout: {{ randomSeed: 2 }} }};
-        var network = new vis.Network(container, data, options);
-      </script>
-      <div id="{id}" style="display:inline-block;width:500px;height:300px"></div>"""
-    html
+/// Try to pick one random element from a list
+let tryPickOne l = 
+  let a = Array.ofSeq l
+  if a.Length > 0 then Some(a.[rnd.Next(a.Length)]) else None
 
-// --------------------------------------------------------------------------------------
-// 
-// --------------------------------------------------------------------------------------
+/// Choose one of the selected operations and call it 
+/// (if this was empty list, just return 'g' but this is not likely)
+let choose ops v g = 
+  match tryPickOne ops with
+  | Some op -> op v g
+  | _ -> g
 
-module Logic = 
-  let rnd = System.Random() 
-
-  let withOne op cont g =
-    let (arr:_[]) = op g
-    if arr.Length > 0 then 
-      cont arr.[rnd.Next(arr.Length)] g
-    else 
+/// Choose any of the inputs generated by 'f' and call the operation
+/// 'op' with this input as argument (graph 'g' is implicitly passed to all)
+let withAny f op g = 
+  let msg, res = f g
+  match tryPickOne res with 
+  | Some v -> op v g
+  | _ -> 
+      printfn $"No {msg}"
       g
 
-  let applyOne ops g = 
-    (Seq.item (rnd.Next(Seq.length ops)) ops) g
+// --------------------------------------------------------------------------------------
+// Modelling operations of the agents
+// --------------------------------------------------------------------------------------
 
-module Sim = 
-  let rnd = System.Random() 
-  let log = Event<string>()
+/// Returns conflicting agents involving an agent 'a'
+/// i.e., edges where either or both agents no longer believe in the 'Reason' 
+let conflictingEdges a (g:Graph) = 
+  $"conflicting edges for agent {a.ID}",
+  [ for e in g.GetEdges(a.ID) do      
+      let conflict = 
+        not (g.GetAgent(e.Nodes.First).Beliefs.Contains(e.Reason) &&
+          g.GetAgent(e.Nodes.Second).Beliefs.Contains(e.Reason))
+      if conflict then yield e ]
 
-  let getEdges g = g.Edges
+// RESOLVE CONFLICT
 
-  let addEdge (first, second, belief) g = 
-    log.Trigger $"Adding {first}<--({belief})-->{second}"
-    Graph.addEdge { Nodes = unpair first second; Belief = belief } g
-    
-  let getAgentBeliefs a g = 
-    Graph.getEdges a g 
-    |> Seq.map (fun e -> e.Belief)
+let removeBelief agent conflict (g:Graph) = 
+  printfn $"Removing belief {conflict.Reason} from {agent.ID}"
+  g.UpdateAgent(agent.RemoveBelief(conflict.Reason))
 
-  let getConflictingEdges g = 
-    g.Edges |> Array.filter (fun edge -> 
-      let domain = Beliefs.getDomain edge.Belief
-      let firstBeliefs = getAgentBeliefs edge.Nodes.First g
-      let secondBeliefs = getAgentBeliefs edge.Nodes.Second g
-      Seq.exists (fun b -> b <> edge.Belief && domain.Contains b) firstBeliefs ||
-      Seq.exists (fun b -> b <> edge.Belief && domain.Contains b) secondBeliefs)
+let removeLink agent conflict (g:Graph) = 
+  printfn "Removing link %d--(%s)--%d"
+    conflict.Nodes.First conflict.Reason conflict.Nodes.Second
+  g.RemoveEdge(conflict)
 
-  let getDisconnectedCompatibleAgents g = 
-    [| for first in g.Agents do  
-         for second in g.Agents do
-           let first, second = first.ID, second.ID
-           if first <> second && not (Graph.existsEdge first second g) then 
-             let firstBeliefs = getAgentBeliefs first g |> set
-             let secondBeliefs = getAgentBeliefs second g |> set
-             for domain in ideas do 
-               let shared = domain |> Seq.filter (fun b -> firstBeliefs.Contains b && secondBeliefs.Contains b)
-               for belief in shared do yield first, second, belief |]
-  
-  let updateBeliefOnEdge edge g = 
-    let domain = Beliefs.getDomain edge.Belief
-    let firstBeliefs = getAgentBeliefs edge.Nodes.First g 
-    let secondBeliefs = getAgentBeliefs edge.Nodes.Second g
-    let neighbourBeliefs = 
-      Seq.append (Seq.append firstBeliefs secondBeliefs) [edge.Belief]
-      |> Seq.filter domain.Contains
-      |> Array.ofSeq
-    let newBelief = neighbourBeliefs.[rnd.Next neighbourBeliefs.Length]
-    log.Trigger $"Adopting {newBelief} on {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
-    Graph.updateBelief edge newBelief g
-  
-  let removeEdge edge g = 
-    log.Trigger $"Removing {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
-    Graph.removeEdge edge g
+let resolveConflict agent =  
+  withAny (conflictingEdges agent) <| choose [
+    removeBelief agent
+    removeLink agent
+  ]
 
-  let rec iterate n f g = seq { 
-    if n > 0 then 
-      yield g
-      let g = f g
-      yield! iterate (n - 1) f g
-    else 
-      yield g }
 
-let experiments () = 
-  let g = Graph.initGraph 5 10
+/// Returns other agents in the network that believe in 'belief'
+/// and do not currently have conflicting link wiht 'agent'
+let potentialNeighbours agent belief (g:Graph) = 
+  let agentLinks = g.GetEdges(agent.ID)
+  let linksWith other = 
+    agentLinks |> Seq.filter (fun link -> 
+      link.Nodes = unpair agent.ID other.ID)
+  $"other agents believing {belief} without conflicting link",
+  g.GetAgents() 
+  |> Seq.filter (fun other -> 
+    other.ID <> agent.ID && other.Beliefs.Contains belief)
+  |> Seq.filter (fun other -> 
+    linksWith other |> Seq.forall (fun l -> not (conflict l.Reason belief)))
 
-  let update = 
-    Logic.applyOne [
-      Logic.withOne Sim.getDisconnectedCompatibleAgents
-        Sim.addEdge
-      Logic.withOne Sim.getEdges 
-        Sim.updateBeliefOnEdge
-      Logic.withOne Sim.getConflictingEdges 
-        Sim.removeEdge
-    ]
-    //Logic.pickOneNonEmpty g.Edges 
-    //|> Sim.removeEdge
+let beliefs agent (g:Graph) =
+  $"beliefs of agent {agent.ID}", agent.Beliefs.All
 
-  ()
+let availableAgents (g:Graph) = 
+  "available agents", g.GetAgents()
+
+let currentNeighbors agent (g:Graph) = 
+  $"neighbors of agent {agent.ID}",
+  seq { for e in g.GetEdges(agent.ID) -> g.GetAgent(e.Nodes.Other(agent.ID)) }
+
+let nonConflictingBeliefs this other g = 
+  let conflicting = 
+    [ for b in this.Beliefs.All do
+        for domain in ideas do 
+          if domain.Contains b then yield! domain ] |> set
+  $"""beliefs not conflicting with {String.concat "," this.Beliefs.All}""",
+  other.Beliefs.All |> Seq.filter (fun b -> not (conflicting.Contains b))
+
+
+// ADD LINK / BELIEF & UPDATE GRAPH
+
+let addNewLink agent = 
+  withAny (beliefs agent) <| fun belief -> 
+    withAny (potentialNeighbours agent belief) <| fun neighbor g ->
+      printfn "Adding link %d--(%s)--%d" agent.ID belief neighbor.ID
+      g.AddEdge({ Nodes = unpair agent.ID neighbor.ID; Reason = belief })
+
+let adoptNewBelief agent =
+  withAny (currentNeighbors agent) <| fun other ->
+    withAny (nonConflictingBeliefs agent other) <| fun belief g ->
+      printfn $"Agent {agent.ID} is adopting belief {belief}"
+      g.UpdateAgent(agent.AdoptBelief(belief))
+
+let updateGraph =
+  withAny availableAgents <| choose [
+    resolveConflict
+    addNewLink
+    adoptNewBelief
+  ]
+
+// MAIN LOOP & DEBUGGING
+
+let rec loop n g = 
+  if n > 0 then 
+    //printfn $"==================== #{n} ===================="
+    let g = updateGraph g
+    //printGraph g
+    loop (n - 1) g
+  else g
+
+let g = initGraph()
+let g2 = loop 100000 g
+printGraph g2
+
+updateGraph g2 |> ignore
+
+let (KeyValue(_, a)) = g.Agents |> Seq.head
+
+// Is it possible to have a belief not shared by any other agent?
