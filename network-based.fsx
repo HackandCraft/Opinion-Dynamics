@@ -34,7 +34,6 @@ let ideas : Ideas =
     set ["B1"; "B2"; "B3"; "B4" ]
     set ["C1"; "C2"; "C3"; "C4" ]]
 
-
 type AgentID = int
 
 type Agent = 
@@ -49,17 +48,28 @@ type Graph =
     Edges : Edge[] }
 
 // --------------------------------------------------------------------------------------
-// 
+// Operations for working with beliefs
 // --------------------------------------------------------------------------------------
 
 module Beliefs = 
+  let private domainIndexLookup =
+    seq { for i, dom in Seq.indexed ideas do   
+            for belief in dom do  
+              yield belief, (i, dom) } |> dict
+
+  /// Returns index of a domain into which the given belief belongs
+  let getDomainIndex b = 
+    domainIndexLookup.[b] |> fst
+
+  /// Returns a domain of a belief (i.e., other conflicting beliefs)
   let getDomain b = 
-    ideas |> Seq.find (fun d -> d.Contains b)
+    domainIndexLookup.[b] |> snd
 
+  /// Are the two beliefs conflicting?
   let conflict a b = 
-    ideas |> Seq.exists (fun domain -> domain.Contains a && domain.Contains b)
+    getDomainIndex a = getDomainIndex b
 
-  let colors = [|
+  let private colors = [|
     [|"#3182bd";"#6baed6";"#9ecae1";"#c6dbef"|]
     [|"#e6550d";"#fd8d3c";"#fdae6b";"#fdd0a2"|]
     [|"#31a354";"#74c476";"#a1d99b";"#c7e9c0"|]
@@ -71,6 +81,8 @@ module Beliefs =
 //    [|"#843c39";"#ad494a";"#d6616b";"#e7969c"|]; 
 //    [|"#7b4173";"#a55194";"#ce6dbd";"#de9ed6"|] |]
 
+  /// Returns a HTML color of a given belief 
+  /// TODO: This only works for domains with <= 4 beliefs
   let colorBelief = 
     let lookup = 
       seq { for shades, domain in Seq.zip colors ideas do
@@ -80,12 +92,17 @@ module Beliefs =
 
 
 // --------------------------------------------------------------------------------------
-// 
+// Operations for working with a graph
 // --------------------------------------------------------------------------------------
 
 module Graph = 
   let getEdges id g = 
     g.Edges |> Seq.filter (fun e -> e.Nodes.Contains(id)) 
+
+  let getNeighbours a g = 
+    g.Edges |> Seq.choose (fun e ->
+      if e.Nodes.Contains(a.ID) then Some { ID = e.Nodes.Other(a.ID) }
+      else None )
 
   let updateBelief edge newBelief g = 
     { g with Edges = g.Edges |> Array.map (fun old ->
@@ -99,6 +116,9 @@ module Graph =
 
   let addEdge edge g = 
     { g with Edges = Array.append [|edge|] g.Edges }
+
+  let addEdges edges g = 
+    { g with Edges = Array.append edges g.Edges }
 
   let mutable agentCounter = 0
   let rnd = System.Random() 
@@ -128,10 +148,13 @@ module Graph =
       printfn $" {l.Nodes.First} <--({l.Belief})--> {l.Nodes.Second}"
 
 // --------------------------------------------------------------------------------------
-// 
+// Visualizing network
 // --------------------------------------------------------------------------------------
 
 module Vis = 
+  let filterGraph domain (g:Graph) =
+    { g with Edges = g.Edges |> Array.filter (fun e -> Set.contains e.Belief domain) }
+
   let visualizeNetwork (g:Graph) = 
     let nodes = 
       JsonValue.Array [|
@@ -174,7 +197,7 @@ module Vis =
     html
 
 // --------------------------------------------------------------------------------------
-// 
+// Basic logic operations for composing graph transforamtions
 // --------------------------------------------------------------------------------------
 
 module Logic = 
@@ -190,19 +213,89 @@ module Logic =
   let applyOne ops g = 
     (Seq.item (rnd.Next(Seq.length ops)) ops) g
 
+  let applyOneProb ops g = 
+    let sum = Seq.sumBy fst ops
+    let r = rnd.NextDouble() * sum
+    let mutable cummulative = 0.0
+    let _, op = ops |> Seq.find (fun (p, op) -> 
+      cummulative <- cummulative + p
+      r <= cummulative)
+    op g
+
+// --------------------------------------------------------------------------------------
+// Operations of the simulation
+// --------------------------------------------------------------------------------------
+
 module Sim = 
-  let rnd = System.Random() 
+  let private rnd = System.Random() 
   let log = Event<string>()
 
-  let getEdges g = g.Edges
+  // HELPERS
+
+  let getAgentBeliefs a g = 
+    [| for e in Graph.getEdges a g -> e.Belief |]
+
+  // ACTIONS
+  // All of these take some (randomly picked) options 
+  // and modify graph according to those options
 
   let addEdge (first, second, belief) g = 
     log.Trigger $"Adding {first}<--({belief})-->{second}"
     Graph.addEdge { Nodes = unpair first second; Belief = belief } g
-    
-  let getAgentBeliefs a g = 
-    Graph.getEdges a g 
-    |> Seq.map (fun e -> e.Belief)
+
+  let adoptBelief (agent, belief, neighbours) g = 
+    let edges = 
+      [| for n in neighbours -> 
+           log.Trigger $"Adding {agent.ID}<--({belief})-->{n.ID}"
+           { Nodes = unpair agent.ID n.ID; Belief = belief } |]
+    Graph.addEdges edges g
+
+  let updateBeliefOnEdge edge g = 
+    let domain = Beliefs.getDomain edge.Belief
+    let firstBeliefs = getAgentBeliefs edge.Nodes.First g 
+    let secondBeliefs = getAgentBeliefs edge.Nodes.Second g
+    // TODO: 'edge' is currently included twice - do we want that?
+    let neighbourBeliefs = 
+      Seq.append firstBeliefs secondBeliefs
+      |> Seq.filter domain.Contains
+      |> Array.ofSeq
+    let newBelief = neighbourBeliefs.[rnd.Next neighbourBeliefs.Length]
+    log.Trigger $"Adopting {newBelief} on {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
+    Graph.updateBelief edge newBelief g
+  
+  let removeEdge edge g = 
+    log.Trigger $"Removing {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
+    Graph.removeEdge edge g
+
+  // OPTION GENERATORS
+  // All of these take a graph and generate an array of options for one of the above actions 
+
+  let getEdges g = g.Edges
+
+  let getConnectedAgents g = 
+    let conn = g.Edges |> Seq.collect (fun e -> [e.Nodes.First; e.Nodes.Second]) |> set
+    g.Agents |> Array.filter (fun a -> conn.Contains a.ID)
+
+  let getDisconnectedAgents g = 
+    let conn = g.Edges |> Seq.collect (fun e -> [e.Nodes.First; e.Nodes.Second]) |> set
+    g.Agents |> Array.filter (fun a -> not (conn.Contains a.ID))
+
+  let private getBeliefsToAdopt a g = 
+    // Get beliefs from domains that this agent has some opinion about
+    let myDomains = getAgentBeliefs a.ID g |> Seq.map Beliefs.getDomain |> Seq.fold Set.union Set.empty
+    let neighbours = Graph.getNeighbours a g 
+    let potentialLinks = 
+      [ for n in neighbours do
+          let otherBeliefs = getAgentBeliefs n.ID g |> Seq.filter (fun b -> not (myDomains.Contains b))
+          for ob in Seq.distinct otherBeliefs -> ob, n ]      
+    potentialLinks 
+    |> Seq.groupBy fst
+    |> Seq.choose (fun (b, agents) -> 
+        if Seq.length agents < 2 then None
+        else Some(a, b, Seq.map snd agents))
+
+  let getAgentsWithBeliefsToAdopt g = 
+    g.Agents |> Seq.collect (fun a -> getBeliefsToAdopt a g) |> Array.ofSeq  
 
   let getConflictingEdges g = 
     g.Edges |> Array.filter (fun edge -> 
@@ -223,21 +316,8 @@ module Sim =
                let shared = domain |> Seq.filter (fun b -> firstBeliefs.Contains b && secondBeliefs.Contains b)
                for belief in shared do yield first, second, belief |]
   
-  let updateBeliefOnEdge edge g = 
-    let domain = Beliefs.getDomain edge.Belief
-    let firstBeliefs = getAgentBeliefs edge.Nodes.First g 
-    let secondBeliefs = getAgentBeliefs edge.Nodes.Second g
-    let neighbourBeliefs = 
-      Seq.append (Seq.append firstBeliefs secondBeliefs) [edge.Belief]
-      |> Seq.filter domain.Contains
-      |> Array.ofSeq
-    let newBelief = neighbourBeliefs.[rnd.Next neighbourBeliefs.Length]
-    log.Trigger $"Adopting {newBelief} on {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
-    Graph.updateBelief edge newBelief g
-  
-  let removeEdge edge g = 
-    log.Trigger $"Removing {edge.Nodes.First}<--({edge.Belief})-->{edge.Nodes.Second}"
-    Graph.removeEdge edge g
+  // MAIN
+  // Iteratively transform the graph using a specified transformation 'f'
 
   let rec iterate n f g = seq { 
     if n > 0 then 
@@ -247,19 +327,36 @@ module Sim =
     else 
       yield g }
 
-let experiments () = 
-  let g = Graph.initGraph 5 10
+  let iterateWithLog n f g = 
+    let msgs = ResizeArray<string>()
+    use _ = log.Publish.Subscribe(msgs.Add)
+    let formatLog() = $"""<ul>{String.concat "" [for m in msgs -> $"<li>{m}</li>"]}</ul>"""
+    iterate n f g |> Array.ofSeq, formatLog()
 
+// FOR USE IN F# INTERACTIVE
+
+let experiments () = 
+  let g = Graph.initGraph 5 10  
+  Graph.printGraph g
+  
   let update = 
     Logic.applyOne [
+      // Adopt new belief
+      Logic.withOne Sim.getAgentsWithBeliefsToAdopt
+        Sim.adoptBelief
+      // Connect two disconnected agents with shared belief
       Logic.withOne Sim.getDisconnectedCompatibleAgents
         Sim.addEdge
+      // Switch an edge (to a new belief based on neighbour's beliefs)
       Logic.withOne Sim.getEdges 
         Sim.updateBeliefOnEdge
+      // "tired of all the arguments" Stop believing in conflicting thing
       Logic.withOne Sim.getConflictingEdges 
         Sim.removeEdge
-    ]
-    //Logic.pickOneNonEmpty g.Edges 
-    //|> Sim.removeEdge
 
+      Logic.withOne Sim.getDisconnectedAgents (fun a1 ->
+        Logic.withOne Sim.getConnectedAgents (fun a2 ->
+          Logic.withOne (Sim.getAgentBeliefs a2.ID) (fun belief ->
+            Sim.addEdge (a1.ID, a2.ID, belief))))
+    ]
   ()
