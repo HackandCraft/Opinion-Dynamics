@@ -1,4 +1,4 @@
-module AgentBased
+module NetworkBased
 #r "nuget: FSharp.Data"
 open FSharp.Data
 
@@ -20,6 +20,16 @@ type UnPair<'T when 'T : comparison> =
     else failwith "Wrong argument to Other"
 
 let unpair a b = UnPair<_>.Create(a, b)
+
+
+let rec combinations acc size set = seq {
+  match size, set with 
+  | n, x::xs -> 
+      if n > 0 then yield! combinations (x::acc) (n - 1) xs
+      if n >= 0 then yield! combinations acc n xs 
+  | 0, [] -> yield acc 
+  | _, [] -> () }
+
 
 // --------------------------------------------------------------------------------------
 // Domain model
@@ -47,10 +57,10 @@ type Graph =
   { Agents : Agent[]
     Edges : Edge[] }
 
+
 // --------------------------------------------------------------------------------------
 // Operations for working with beliefs
 // --------------------------------------------------------------------------------------
-
 module Beliefs = 
   let private domainIndexLookup =
     seq { for i, dom in Seq.indexed ideas do   
@@ -146,6 +156,30 @@ module Graph =
     printfn "LINKS"
     for l in graph.Edges do
       printfn $" {l.Nodes.First} <--({l.Belief})--> {l.Nodes.Second}"
+
+
+module Stats = 
+
+  let averageDegree (g:Graph) = 
+    g.Agents 
+    |> Seq.map (fun a -> 
+      let neighbours = Graph.getEdges a.ID g 
+      float (Seq.length neighbours) ) 
+    |> Seq.average
+  
+  let clusteringCoeffcient (g:Graph) =
+    g.Agents 
+      |> Seq.map (fun a -> Graph.getNeighbours a g)
+      |> Seq.map (fun s -> s |> Seq.toList)
+      |> Seq.map (fun nl -> combinations [] 2 nl) //get all possible triads
+      |> Seq.concat
+      |> Seq.map (fun  x -> (x |> Seq.head, x |> Seq.last ))
+      |> Seq.map (fun (f, s) -> match (Graph.existsEdge (f.ID) (s.ID) g) with  // are the neighbours connected closing the triad
+                                                        | true -> 1.0
+                                                        | false -> 0.0
+                                                        )
+      |> (fun x -> (x |> Seq.sum) / float (x |> Seq.length)) // ratio between actual triads and possible triads
+ 
 
 // --------------------------------------------------------------------------------------
 // Visualizing network
