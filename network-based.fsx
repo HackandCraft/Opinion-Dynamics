@@ -174,10 +174,8 @@ module Stats =
       |> Seq.map (fun nl -> combinations [] 2 nl) //get all possible triads
       |> Seq.concat
       |> Seq.map (fun  x -> (x |> Seq.head, x |> Seq.last ))
-      |> Seq.map (fun (f, s) -> match (Graph.existsEdge (f.ID) (s.ID) g) with  // are the neighbours connected closing the triad
-                                                        | true -> 1.0
-                                                        | false -> 0.0
-                                                        )
+      |> Seq.map (fun (f, s) -> if (Graph.existsEdge (f.ID) (s.ID) g) = true then 1.0 else 0.0)
+                                                        
       |> (fun x -> (x |> Seq.sum) / float (x |> Seq.length)) // ratio between actual triads and possible triads
  
 
