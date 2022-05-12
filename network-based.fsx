@@ -175,9 +175,24 @@ module Stats =
       |> Seq.concat
       |> Seq.map (fun  x -> (x |> Seq.head, x |> Seq.last ))
       |> Seq.map (fun (f, s) -> if (Graph.existsEdge (f.ID) (s.ID) g) = true then 1.0 else 0.0)
-                                                        
       |> (fun x -> (x |> Seq.sum) / float (x |> Seq.length)) // ratio between actual triads and possible triads
  
+  
+  let rec neighboursContainTarget (g: Graph) (target: Agent) (length: int)  (neighbours: Agent seq)  =
+    neighbours
+    |> Seq.exists (fun a -> a = target) 
+    |> (fun tf -> match tf with 
+                  | true -> length
+                  | false -> neighbours
+                              |> Seq.map (fun n -> Graph.getNeighbours n g)
+                              |> Seq.concat
+                              |> neighboursContainTarget g target (length + 1)
+      )
+  
+  let shortestPath (a1: Agent) (a2: Agent) (g: Graph)  = 
+    neighboursContainTarget  (g: Graph)  a2 1 (Graph.getNeighbours a1 g)
+   
+    
 
 // --------------------------------------------------------------------------------------
 // Visualizing network
