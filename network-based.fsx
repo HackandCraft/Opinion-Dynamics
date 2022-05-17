@@ -170,6 +170,7 @@ module Stats =
   /// Clustering coefficient is the number of triads (complete 3 node graphs)
   /// divided by the number of potential triads 
   let clusteringCoeffcient (g:Graph) =
+    let averageOrZero s = if Seq.isEmpty s then 0.0 else Seq.average s
     g.Agents 
     |> Seq.collect (fun a -> 
         // Get neighbours of 'a' and generate all possible triads
@@ -178,7 +179,7 @@ module Stats =
     |> Seq.map (function [x;y] -> x,y | _ -> failwith "Expected two elements!")
     |> Seq.map (fun (f, s) -> 
         if (Graph.existsEdge (f.ID) (s.ID) g) = true then 1.0 else 0.0)
-    |> Seq.average
+    |> averageOrZero
  
 
 // --------------------------------------------------------------------------------------
