@@ -13,14 +13,14 @@ type UnPair<'T when 'T : comparison> =
   static member Create(a, b) = 
     let a, b = if a > b then b, a else a, b
     { First = a; Second = b }
-  member x.Contains(v) = x.First = v || x.Second = v
+  member x.Contains(v) = 
+    x.First = v || x.Second = v
   member x.Other(v) = 
     if x.First = v then x.Second 
     elif x.Second = v then x.First
     else failwith "Wrong argument to Other"
 
 let unpair a b = UnPair<_>.Create(a, b)
-
 
 let rec combinations acc size set = seq {
   match size, set with 
@@ -56,7 +56,6 @@ type Edge =
 type Graph =
   { Agents : Agent[]
     Edges : Edge[] }
-
 
 // --------------------------------------------------------------------------------------
 // Operations for working with beliefs
@@ -160,6 +159,7 @@ module Graph =
 
 module Stats = 
 
+  /// Average degree is the average number of neighbours of each node
   let averageDegree (g:Graph) = 
     g.Agents 
     |> Seq.map (fun a -> 
@@ -167,16 +167,18 @@ module Stats =
       float (Seq.length neighbours) ) 
     |> Seq.average
   
+  /// Clustering coefficient is the number of triads (complete 3 node graphs)
+  /// divided by the number of potential triads 
   let clusteringCoeffcient (g:Graph) =
     g.Agents 
-      |> Seq.map (fun a -> Graph.getNeighbours a g)
-      |> Seq.map (fun s -> s |> Seq.toList)
-      |> Seq.map (fun nl -> combinations [] 2 nl) //get all possible triads
-      |> Seq.concat
-      |> Seq.map (fun  x -> (x |> Seq.head, x |> Seq.last ))
-      |> Seq.map (fun (f, s) -> if (Graph.existsEdge (f.ID) (s.ID) g) = true then 1.0 else 0.0)
-                                                        
-      |> (fun x -> (x |> Seq.sum) / float (x |> Seq.length)) // ratio between actual triads and possible triads
+    |> Seq.collect (fun a -> 
+        // Get neighbours of 'a' and generate all possible triads
+        // (i.e. pairs of nodes that are both linked to 'a')
+        Graph.getNeighbours a g |> List.ofSeq |> combinations [] 2)
+    |> Seq.map (function [x;y] -> x,y | _ -> failwith "Expected two elements!")
+    |> Seq.map (fun (f, s) -> 
+        if (Graph.existsEdge (f.ID) (s.ID) g) = true then 1.0 else 0.0)
+    |> Seq.average
  
 
 // --------------------------------------------------------------------------------------
